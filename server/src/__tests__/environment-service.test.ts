@@ -162,4 +162,26 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.name).toBe("Local");
   });
+
+  it("deduplicates concurrent default local environment creation", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => svc.ensureLocalEnvironment(companyId)),
+    );
+
+    expect(new Set(results.map((environment) => environment.id)).size).toBe(1);
+
+    const rows = await db.select().from(environments).where(eq(environments.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.driver).toBe("local");
+    expect(rows[0]?.status).toBe("active");
+  });
 });

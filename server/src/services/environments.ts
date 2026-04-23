@@ -1,8 +1,20 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { environmentLeases, environments } from "@paperclipai/db";
-import type { Environment, EnvironmentLease, EnvironmentLeasePolicy, EnvironmentLeaseStatus, UpdateEnvironment } from "@paperclipai/shared";
-import type { CreateEnvironment } from "@paperclipai/shared";
+import {
+  ENVIRONMENT_DRIVERS,
+  ENVIRONMENT_LEASE_CLEANUP_STATUSES,
+  ENVIRONMENT_LEASE_POLICIES,
+  ENVIRONMENT_LEASE_STATUSES,
+  ENVIRONMENT_STATUSES,
+  type CreateEnvironment,
+  type Environment,
+  type EnvironmentLease,
+  type EnvironmentLeaseCleanupStatus,
+  type EnvironmentLeasePolicy,
+  type EnvironmentLeaseStatus,
+  type UpdateEnvironment,
+} from "@paperclipai/shared";
 
 type EnvironmentRow = typeof environments.$inferSelect;
 type EnvironmentLeaseRow = typeof environmentLeases.$inferSelect;
@@ -15,14 +27,20 @@ function cloneRecord(value: unknown, fallback: Record<string, unknown> | null = 
   return { ...(value as Record<string, unknown>) };
 }
 
+function readEnum<T extends string>(value: string | null, allowed: readonly T[], fieldName: string): T | null {
+  if (value === null) return null;
+  if ((allowed as readonly string[]).includes(value)) return value as T;
+  throw new Error(`Unexpected ${fieldName} value: ${value}`);
+}
+
 function toEnvironment(row: EnvironmentRow): Environment {
   return {
     id: row.id,
     companyId: row.companyId,
     name: row.name,
     description: row.description ?? null,
-    driver: row.driver as Environment["driver"],
-    status: row.status as Environment["status"],
+    driver: readEnum(row.driver, ENVIRONMENT_DRIVERS, "environment driver") ?? "local",
+    status: readEnum(row.status, ENVIRONMENT_STATUSES, "environment status") ?? "active",
     config: cloneRecord(row.config, {}) ?? {},
     metadata: cloneRecord(row.metadata),
     createdAt: row.createdAt,
@@ -38,8 +56,8 @@ function toEnvironmentLease(row: EnvironmentLeaseRow): EnvironmentLease {
     executionWorkspaceId: row.executionWorkspaceId ?? null,
     issueId: row.issueId ?? null,
     heartbeatRunId: row.heartbeatRunId ?? null,
-    status: row.status as EnvironmentLease["status"],
-    leasePolicy: row.leasePolicy as EnvironmentLease["leasePolicy"],
+    status: readEnum(row.status, ENVIRONMENT_LEASE_STATUSES, "environment lease status") ?? "active",
+    leasePolicy: readEnum(row.leasePolicy, ENVIRONMENT_LEASE_POLICIES, "environment lease policy") ?? "ephemeral",
     provider: row.provider ?? null,
     providerLeaseId: row.providerLeaseId ?? null,
     acquiredAt: row.acquiredAt,
@@ -47,7 +65,11 @@ function toEnvironmentLease(row: EnvironmentLeaseRow): EnvironmentLease {
     expiresAt: row.expiresAt ?? null,
     releasedAt: row.releasedAt ?? null,
     failureReason: row.failureReason ?? null,
-    cleanupStatus: row.cleanupStatus as EnvironmentLease["cleanupStatus"],
+    cleanupStatus: readEnum(
+      row.cleanupStatus,
+      ENVIRONMENT_LEASE_CLEANUP_STATUSES,
+      "environment lease cleanup status",
+    ),
     metadata: cloneRecord(row.metadata),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -89,77 +111,33 @@ export function environmentService(db: Db) {
     },
 
     ensureLocalEnvironment: async (companyId: string): Promise<Environment> => {
-      const exactMatch = await db
-        .select()
-        .from(environments)
-        .where(
-          and(
-            eq(environments.companyId, companyId),
-            eq(environments.driver, "local"),
-            eq(environments.status, "active"),
-            eq(environments.name, DEFAULT_LOCAL_ENVIRONMENT_NAME),
-          ),
-        )
-        .orderBy(desc(environments.updatedAt), desc(environments.createdAt))
-        .then((rows) => rows[0] ?? null);
-      if (exactMatch) {
-        return toEnvironment(exactMatch);
-      }
-
-      const anyActiveLocal = await db
-        .select()
-        .from(environments)
-        .where(
-          and(
-            eq(environments.companyId, companyId),
-            eq(environments.driver, "local"),
-            eq(environments.status, "active"),
-          ),
-        )
-        .orderBy(desc(environments.updatedAt), desc(environments.createdAt))
-        .then((rows) => rows[0] ?? null);
-      if (anyActiveLocal) {
-        return toEnvironment(anyActiveLocal);
-      }
-
-      return await db.transaction(async (tx) => {
-        const existing = await tx
-          .select()
-          .from(environments)
-          .where(
-            and(
-              eq(environments.companyId, companyId),
-              eq(environments.driver, "local"),
-              eq(environments.status, "active"),
-            ),
-          )
-          .orderBy(desc(environments.updatedAt), desc(environments.createdAt))
-          .then((rows) => rows[0] ?? null);
-        if (existing) {
-          return toEnvironment(existing);
-        }
-
-        const now = new Date();
-        const created = await tx
-          .insert(environments)
-          .values({
-            companyId,
-            name: DEFAULT_LOCAL_ENVIRONMENT_NAME,
-            description: DEFAULT_LOCAL_ENVIRONMENT_DESCRIPTION,
-            driver: "local",
+      const now = new Date();
+      const row = await db
+        .insert(environments)
+        .values({
+          companyId,
+          name: DEFAULT_LOCAL_ENVIRONMENT_NAME,
+          description: DEFAULT_LOCAL_ENVIRONMENT_DESCRIPTION,
+          driver: "local",
+          status: "active",
+          config: {},
+          metadata: {
+            managedByPaperclip: true,
+            defaultForCompany: true,
+          },
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [environments.companyId, environments.driver],
+          set: {
             status: "active",
-            config: {},
-            metadata: {
-              managedByPaperclip: true,
-              defaultForCompany: true,
-            },
-            createdAt: now,
             updatedAt: now,
-          })
-          .returning()
-          .then((rows) => rows[0]);
-        return toEnvironment(created);
-      });
+          },
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      return toEnvironment(row);
     },
 
     create: async (companyId: string, input: CreateEnvironment): Promise<Environment> => {
@@ -263,7 +241,7 @@ export function environmentService(db: Db) {
       status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> = "released",
       options?: {
         failureReason?: string;
-        cleanupStatus?: "pending" | "success" | "failed";
+        cleanupStatus?: EnvironmentLeaseCleanupStatus;
       },
     ) => {
       const now = new Date();

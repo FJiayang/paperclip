@@ -28,6 +28,7 @@ export {
   environmentDriverSchema,
   environmentStatusSchema,
   environmentLeaseStatusSchema,
+  environmentLeaseCleanupStatusSchema,
   createEnvironmentSchema,
   updateEnvironmentSchema,
   type CreateEnvironment,

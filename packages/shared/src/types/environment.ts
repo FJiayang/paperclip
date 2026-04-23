@@ -1,4 +1,10 @@
-import type { EnvironmentDriver, EnvironmentLeasePolicy, EnvironmentLeaseStatus, EnvironmentStatus } from "../constants.js";
+import type {
+  EnvironmentDriver,
+  EnvironmentLeaseCleanupStatus,
+  EnvironmentLeasePolicy,
+  EnvironmentLeaseStatus,
+  EnvironmentStatus,
+} from "../constants.js";
 
 export interface LocalEnvironmentConfig {
   [key: string]: unknown;
@@ -33,7 +39,7 @@ export interface EnvironmentLease {
   expiresAt: Date | null;
   releasedAt: Date | null;
   failureReason: string | null;
-  cleanupStatus: "pending" | "success" | "failed" | null;
+  cleanupStatus: EnvironmentLeaseCleanupStatus | null;
   metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
